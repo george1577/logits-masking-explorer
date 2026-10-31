@@ -54,7 +54,7 @@ class LanguageModel:
     def token_label(self, token_id: int) -> str:
         """A token's text with whitespace made visible."""
         if token_id in self.eos_ids:
-            return "⟨end⟩"
+            return "⟨end of text⟩"
         text = self.tokenizer.decode([token_id])
         return text.replace(" ", "␣").replace("\n", "⏎")
 

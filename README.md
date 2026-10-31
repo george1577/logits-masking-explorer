@@ -158,6 +158,10 @@ offers. Try another word, more segments, or the 1.5B model.
 a table showing what your last click did (chosen beam kept, every other beam `-10000`), and the
 model's own ranking of the current options.
 
+Open **How these options were built** to step through the beam search that produced the current
+options. It uses the same **Beams** and **Candidates** tables as tab ②, minus the score and mask
+columns, since nothing is masked inside the search; your click is the selection.
+
 ---
 
 ## Project structure

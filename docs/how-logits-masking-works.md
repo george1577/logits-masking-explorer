@@ -228,6 +228,12 @@ sequenceDiagram
     App->>Model: continue from the chosen beam
 ```
 
+To see how the options were produced, open **How these options were built** in the tab: it shows
+the beam search step by step with the same candidates table as tab ② (see
+[Appendix A](#appendix-a-how-beam-search-picks-the-next-beams)). For "Lend", step 1 is a good one
+to look at: the model writes "Lend" as two tokens, `L` + `end`, and `end` after `L` has a
+probability of 0.999, so that beam costs almost nothing and stays in first place.
+
 The notebook picked one beam **per token** (at random, to simulate a person). The app lets you
 pick per **chunk** of about 8 tokens, which feels like real autocomplete and uses the same idea.
 

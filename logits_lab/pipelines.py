@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 from .autocomplete import autocomplete_messages, grounding_lines
-from .beam import BeamResult, beam_search, keep_all, keep_top_scorers
+from .beam import BeamResult, StepTrace, beam_search, keep_all, keep_top_scorers
 from .lm import LanguageModel
 from .masking import TokenBanList
 from .prompts import acrostic_messages, nursery_rhyme_messages, product_description_messages
@@ -85,6 +85,7 @@ class Suggestions:
     examples: list[str]
     options: list[str]
     logprobs: list[float]
+    trace: list[StepTrace]          # the beam search that produced the options, step by step
 
 
 def suggest_continuations(lm: LanguageModel, document: list[str], typed_prefix: str, accepted: str,
@@ -101,7 +102,7 @@ def suggest_continuations(lm: LanguageModel, document: list[str], typed_prefix: 
         seen.add(key)
         options.append(text)
         logprobs.append(beam.logprob)
-    return Suggestions(examples, options, logprobs)
+    return Suggestions(examples, options, logprobs, result.trace)
 
 
 def full_autocomplete_text(typed_prefix: str, accepted: str) -> str:
