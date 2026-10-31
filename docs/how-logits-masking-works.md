@@ -296,6 +296,9 @@ flowchart TD
 
 ## Appendix A: how beam search picks the next beams
 
+You can see these tables yourself: in tab ②, move the **Inspect a step** slider; the
+**Candidates** table under the beams lists every candidate with its total and whether it was kept.
+
 This walks through steps 3 → 6 of tab ② with the **default settings** (brand score,
 "protein drink", 4 beams). Every number below is real, taken from the app's model
 (Qwen2.5-0.5B on CPU, which is deterministic, so you'll see the same values).
@@ -372,7 +375,13 @@ Candidates (top 8 of 16):
 | 2 | Boost your energy | ` with` | 0.293 | −1.226 | **−4.178** | kept |
 | 3 | Boost your energy | ` levels` | 0.060 | −2.813 | **−5.765** | kept |
 | 4 | Boost your energy | `,` | 0.058 | −2.853 | **−5.805** | kept |
-| 5–16 | the three masked beams | anything | 0 | −10000 | ≈ −10003 | dropped |
+| 5 | Experience the ultimate 🚫 | ` protein` | 0.536 | −0.624 → **−10000** | −10003.134 | dropped |
+| 6 | Experience the ultimate 🚫 | ` boost` | 0.178 | −1.724 → **−10000** | −10003.134 | dropped |
+| 7–16 | the masked beams' other wanted tokens | … | … | → **−10000** | ≈ −10003 | dropped |
+
+A masked beam still *wanted* good tokens (`Experience the ultimate protein` would have scored
+−3.758, better than `…energy levels`). The mask replaces each of their log p values with −10000,
+so all of them land around −10003, and every candidate from the same masked beam gets the same total.
 
 Because the masked beams' candidates are all around −10003, the 4 slots go to the survivor's top 4
 tokens **even though ` levels` and `,` are weak** (6% each). Masking forced weak continuations in

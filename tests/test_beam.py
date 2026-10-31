@@ -54,3 +54,20 @@ def test_finished_beams_stop_growing():
 
 def test_mask_value_matches_notebook():
     assert MASK_VALUE == -10000.0
+
+
+def test_trace_records_ranked_candidates():
+    score = lambda t: t.count("good") - t.count("bad")
+    result = beam_search(step_fn, decode, {EOS}, num_beams=3, max_new_tokens=3,
+                         selector=keep_top_scorers(score))
+    step1 = result.trace[1]
+    totals = [c.total for c in step1.candidates]
+    assert totals == sorted(totals, reverse=True)
+    assert sum(c.kept for c in step1.candidates) == 3
+    # masked beams still report the token the model wanted, with its real log p
+    masked = [c for c in step1.candidates if c.masked]
+    assert masked and all(c.token_logprob > MASK_VALUE for c in masked)
+    assert all(c.total < -9000 for c in masked) and not any(c.kept for c in masked)
+    # the kept candidates become the next step's beams
+    kept_texts = sorted(step1.beams[c.parent].text + VOCAB[c.token_id] for c in step1.candidates if c.kept)
+    assert kept_texts == sorted(b.text for b in result.trace[2].beams)

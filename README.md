@@ -101,8 +101,15 @@ phrases Amazon restricts in listings), and a maximum length.
    log-probability become the next beams, so they all descend from survivors.
 
 **What you see:** both final outputs with their scores, a chart of how many beams survived at each
-step, and a step slider showing every beam's text, log-probability, score, and status
-(✅ survives / 🚫 masked).
+step, and a step slider with two tables:
+
+- **Beams at step N:** every beam's text, total log-probability, score, and status
+  (✅ survives / 🚫 masked).
+- **Candidates for step N+1:** every (beam, next token) pair that competed for the next round,
+  ranked by `total = parent total + log p(token)`. It shows the token's real probability
+  (even for masked beams, so you can see what the mask threw away) and whether the candidate
+  became a beam, was dropped because its total was too low, or was dropped because its parent was
+  masked. Appendix A of the guide walks through these numbers step by step.
 
 With the alliteration scorer, watch for the output collapsing into a repeated word. That's the
 scorer being gamed, and the tab explains why.

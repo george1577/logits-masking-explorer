@@ -3,6 +3,7 @@
 Run with:  uv run streamlit run app.py
 """
 
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -201,14 +202,51 @@ with tab2:
         st.markdown("**Beams that survived at each step**")
         st.bar_chart(pd.DataFrame({"surviving beams": [t.num_kept for t in trace]}), height=160)
 
-        step = st.slider("Inspect a step", 0, len(trace) - 1, min(10, len(trace) - 1), key="t2_step")
+        step = st.slider("Inspect a step", 0, len(trace) - 1, min(3, len(trace) - 1), key="t2_step")
+        t = trace[step]
+        st.markdown(f"**Beams at step {step}**")
         st.dataframe(pd.DataFrame([{
             "beam": i,
             "text so far": "…" + visible(b.text[-90:]),
-            "log-probability": round(b.logprob, 2),
+            "total log-prob": round(b.logprob, 3),
             "score": b.score,
             "status": "✅ survives" if b.kept else f"🚫 masked ({MASK_VALUE:.0f})",
-        } for i, b in enumerate(trace[step].beams)]), hide_index=True, width="stretch")
+        } for i, b in enumerate(t.beams)]), hide_index=True, width="stretch")
+
+        if t.candidates:
+            st.markdown(f"**Candidates for step {step + 1}**: how the next {sum(c.kept for c in t.candidates)} "
+                        "beams were chosen")
+            st.caption(
+                "Each beam proposes its top tokens. **total = beam's total log-prob + log p(token)**; a masked "
+                f"beam's tokens all get {MASK_VALUE:.0f} instead of their log p. All candidates are ranked by total, "
+                "and the best ones become the next beams, whichever beam they came from. "
+                "p(token) is the model's real probability of that token given the beam's text, even for masked beams. "
+                "See Appendix A of the guide for a worked example."
+            )
+            rows = []
+            for rank, c in enumerate(t.candidates, start=1):
+                parent = t.beams[c.parent]
+                if c.kept:
+                    result = f"✅ becomes a beam at step {step + 1}"
+                elif c.masked:
+                    result = "🚫 dropped: parent masked"
+                else:
+                    result = "dropped: total too low"
+                rows.append({
+                    "rank": rank,
+                    "from beam": f"{c.parent}: …{visible(parent.text[-40:])}",
+                    "next token": "⟨stays finished⟩" if c.token_id is None else lm.token_label(c.token_id),
+                    "p(token)": math.exp(c.token_logprob),
+                    "log p(token)": round(c.token_logprob, 3),
+                    "parent total": round(parent.logprob, 3),
+                    "total": round(c.total, 3),
+                    "result": result,
+                })
+            st.dataframe(
+                pd.DataFrame(rows),
+                column_config={"p(token)": st.column_config.ProgressColumn(format="%.3f", min_value=0, max_value=1)},
+                hide_index=True, width="stretch",
+            )
 
 # ---- ③ sequence regeneration ------------------------------------------------------------
 
