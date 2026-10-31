@@ -148,6 +148,9 @@ Scorer: **brand score** = (desired phrases present) − (banned phrases present)
 The three beams that used a banned word are cut off. All four beams at the next step grow out of
 "Boost your energy".
 
+Want to know exactly how the next four beams get picked, number by number? See
+[Appendix A: how beam search picks the next beams](#appendix-a-how-beam-search-picks-the-next-beams).
+
 ### Two scorers, one mechanism
 
 The app also offers notebook 1's **alliteration score** (count words starting with a letter).
@@ -288,3 +291,167 @@ flowchart TD
 | LLM picks the target word and a seed line | You type the target word | The extra steps are prompt engineering, not the lesson |
 | Regeneration prompt doesn't mention the next letter | Prompt hints the next letter | The small model rarely finds it otherwise; the check still enforces it |
 | Autocomplete picks per token, at random | You pick per ~8-token chunk | Real autocomplete feel, same mechanism |
+
+---
+
+## Appendix A: how beam search picks the next beams
+
+This walks through steps 3 → 6 of tab ② with the **default settings** (brand score,
+"protein drink", 4 beams). Every number below is real, taken from the app's model
+(Qwen2.5-0.5B on CPU, which is deterministic, so you'll see the same values).
+
+### A.1 Where a token's probability comes from
+
+For each beam, the model reads **the prompt + that beam's text so far** and outputs one logit for
+every token in its vocabulary (~150,000). Softmax turns those into probabilities that add up to 1:
+
+```
+p(token | text so far) = e^(logit of token) / sum over all tokens of e^(logit)
+```
+
+This is a *conditional* probability: "how likely is this token, **given** this exact text before
+it". The same token gets a different probability after "Boost your energy and" than after
+"Boost your energy levels", because the model is reading a different text.
+
+The app works with the **log** of the probability (`log p`), always ≤ 0:
+
+| p | log p |
+|---|---|
+| 1.0 (certain) | 0 |
+| 0.5 | −0.69 |
+| 0.1 | −2.30 |
+| 0.01 | −4.61 |
+
+### A.2 A beam's total: multiply probabilities = add logs
+
+The probability of a whole text is the product of the probabilities of its tokens, each one given
+the tokens before it:
+
+```
+P("Boost your energy and") = P("Boost") × P(" your" | "Boost") × P(" energy" | "Boost your") × P(" and" | "Boost your energy")
+```
+
+Multiplying many small numbers quickly gives numbers too tiny for a computer to store accurately,
+so we **add logs** instead (log(a × b) = log a + log b). That running sum is the beam's
+**total log-probability**:
+
+```
+total(child) = total(parent) + log p(new token | parent's text)
+```
+
+Check it on real numbers: `Boost your energy` has total −2.952 (p = 0.0522). The model gives
+` and` a probability of 0.536 after it (log p = −0.624). So
+`Boost your energy and` = −2.952 + (−0.624) = **−3.576**, and e^−3.576 = 0.028 = 0.0522 × 0.536. ✓
+
+### A.3 The rule for picking the next 4 beams
+
+At every step:
+
+1. Each surviving beam proposes its **top 4** next tokens. Masked beams' tokens all have log p = −10000.
+2. That gives up to 4 × 4 = **16 candidates**, each with `total = parent total + log p(token)`.
+3. Sort all 16 by total. The **best 4 overall** become the next beams, no matter which parent they
+   came from. One parent can supply all 4 children, or none.
+
+Why only the top 4 per beam? Because no beam can ever place more than 4 children. If its 4th best
+token doesn't make the cut, its 5th best (which has an even lower total) can't either.
+
+### A.4 Step 3 → 4: one survivor fills every slot
+
+| Beam at step 3 | Total | Brand score | Status |
+|---|---|---|---|
+| `Boost your energy` | −2.952 | 0 | ✅ survives |
+| `Experience the ultimate` | −3.134 | −1 | 🚫 masked |
+| `Discover the ultimate` | −3.232 | −1 | 🚫 masked |
+| `Experience the perfect` | −3.447 | −1 | 🚫 masked |
+
+Candidates (top 8 of 16):
+
+| Rank | From beam | Next token | p(token) | log p | Total | |
+|---|---|---|---|---|---|---|
+| 1 | Boost your energy | ` and` | 0.536 | −0.624 | **−3.576** | kept |
+| 2 | Boost your energy | ` with` | 0.293 | −1.226 | **−4.178** | kept |
+| 3 | Boost your energy | ` levels` | 0.060 | −2.813 | **−5.765** | kept |
+| 4 | Boost your energy | `,` | 0.058 | −2.853 | **−5.805** | kept |
+| 5–16 | the three masked beams | anything | 0 | −10000 | ≈ −10003 | dropped |
+
+Because the masked beams' candidates are all around −10003, the 4 slots go to the survivor's top 4
+tokens **even though ` levels` and `,` are weak** (6% each). Masking forced weak continuations in
+simply because there was nothing else.
+
+### A.5 Step 4 → 5: the weak beams lose (your question)
+
+All four beams now score 0 on the brand score, so nothing is masked; this is plain beam search.
+
+| Beam at step 4 | Total | p of whole text |
+|---|---|---|
+| `Boost your energy and` | −3.576 | 0.0280 |
+| `Boost your energy with` | −4.178 | 0.0153 |
+| `Boost your energy levels` | −5.765 | 0.0031 |
+| `Boost your energy,` | −5.805 | 0.0030 |
+
+All 16 candidates:
+
+| Rank | From beam | Next token | p(token) | log p | Total | |
+|---|---|---|---|---|---|---|
+| 1 | …energy **with** | ` our` | 0.680 | −0.386 | **−4.565** | kept |
+| 2 | …energy **and** | ` support` | 0.101 | −2.291 | **−5.867** | kept |
+| 3 | …energy **and** | ` boost` | 0.089 | −2.421 | **−5.997** | kept |
+| 4 | …energy **and** | ` muscle` | 0.086 | −2.455 | **−6.031** | kept |
+| 5 | …energy with | ` this` | 0.147 | −1.916 | −6.094 | |
+| 6 | …energy and | ` fuel` | 0.075 | −2.592 | −6.168 | |
+| 7 | …energy with | ` a` | 0.133 | −2.016 | −6.194 | |
+| 8 | …energy **levels** | ` and` | **0.504** | −0.685 | −6.450 | |
+| 9 | …energy levels | ` with` | 0.443 | −0.815 | −6.579 | |
+| 10 | …energy **,** | ` boost` | 0.172 | −1.762 | −7.567 | |
+| 11 | …energy , | ` support` | 0.108 | −2.224 | −8.029 | |
+| 12 | …energy , | ` enhance` | 0.101 | −2.296 | −8.102 | |
+| 13 | …energy , | ` fuel` | 0.071 | −2.647 | −8.453 | |
+| 14 | …energy with | ` the` | 0.013 | −4.340 | −8.518 | |
+| 15 | …energy levels | `,` | 0.027 | −3.604 | −9.369 | |
+| 16 | …energy levels | ` for` | 0.006 | −5.088 | −10.853 | |
+
+**So, to answer the question:** yes. Every possible continuation of `…levels` and `…,` ends up
+with a lower **total** than the 4 winners. Look at rank 8: ` and` after `levels` is a very likely
+next token (50%, far better than ` support` at 10%). But the `levels` beam started this step far
+behind:
+
+```
+"…energy and support"  = −3.576 + (−2.291) = −5.867   ✅ kept
+"…energy levels and"   = −5.765 + (−0.685) = −6.450   ❌ dropped
+```
+
+The gap between the parents (−3.576 vs −5.765, about 9× in probability) is bigger than anything
+one good next token can make up. And ` and` was `levels`' **best** option, so every other token
+after `levels` did even worse. Same story for `,`: its best candidate, ` boost`, only reaches
+−7.567.
+
+In plain words: beam search asks **"which whole sentence-so-far is most likely?"**, not "which
+next word is most likely?" A beam that took an unlikely turn earlier carries that cost with it.
+
+### A.6 Step 5 → 6: the same rule again
+
+| Rank | From beam (total) | Next token | p(token) | Total | |
+|---|---|---|---|---|---|
+| 1 | …and boost (−5.997) | ` your` | 0.826 | **−6.189** | kept |
+| 2 | …with our (−4.565) | ` delicious` | 0.188 | **−6.236** | kept |
+| 3 | …with our (−4.565) | ` high` | 0.156 | **−6.424** | kept |
+| 4 | …with our (−4.565) | ` protein` | 0.127 | **−6.628** | kept |
+| 5 | …and support (−5.867) | ` your` | 0.437 | −6.694 | |
+| 7 | …and muscle (−6.031) | ` with` | 0.243 | −7.447 | |
+
+Two things to notice:
+
+- The strong parent `…with our` supplies **three** children.
+- `…and boost` was only 3rd of 4 at step 5, but its next token is almost certain (` your`, 83%),
+  which costs it almost nothing (−0.19). So it jumps to 1st place. The ranking can change at every
+  step: a beam is kept if its **running total** stays in the top 4.
+
+### A.7 Summary
+
+| Question | Answer |
+|---|---|
+| How is a token's probability calculated? | The model reads the prompt + that beam's text, gives a logit per token, and softmax turns the logits into probabilities. |
+| What is a beam's total? | The sum of the log-probabilities of all its tokens = log of the probability of the whole text. |
+| How are the next 4 beams chosen? | Every surviving beam proposes its top 4 tokens; the 4 candidates with the highest totals win, from any parent. |
+| Why did `levels` and `,` lose every child? | Their own totals were already low; even their best next token couldn't lift them above the children of `and` and `with`. |
+| What does masking change? | A masked beam's tokens all get −10000, so its children rank last and never win a slot. Masking only decides **who may compete**; the totals decide who wins. |
