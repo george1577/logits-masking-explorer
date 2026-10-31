@@ -1,0 +1,3 @@
+# Custom beam search loop instead of HF `generate(num_beams=...)`
+
+The sequence selection, sequence regeneration, and autocomplete views need to show every beam alive at each step, its score, and which beams were masked out. Hugging Face's built-in beam search doesn't expose that per-step state, so all three run on our own small beam search loop over the model's forward pass. It follows the reference notebook's sequence selection rules: beams the selector picks (top scorers, or the one a person clicks) survive, and every other beam's logits are set to `-10000`. We accept that this loop is a teaching copy, not the library's tuned implementation (no length penalty or early-stopping subtleties), because seeing inside is the whole purpose of the app.
