@@ -200,6 +200,10 @@ closer to 0 means more likely.
 Not great poetry from a 0.5B model, but every line passed the check. When **no** segment fits, the
 technique is stuck: it can only choose among what the model offers. That's its real limitation.
 
+Want to know what happens inside a round: how the candidate lines are generated, why they have
+different lengths, and how their log-probabilities are calculated? See
+[Appendix B: inside a sequence regeneration round](#appendix-b-inside-a-sequence-regeneration-round).
+
 **Masking or not?** Nothing is set to −∞ here. Rejecting a whole segment is the same idea
 ("this continuation is not allowed") applied after the fact, to a chunk instead of a token.
 
@@ -297,6 +301,7 @@ flowchart TD
 | LLM picks the target word and a seed line | You type the target word | The extra steps are prompt engineering, not the lesson |
 | Regeneration prompt doesn't mention the next letter | Prompt hints the next letter | The small model rarely finds it otherwise; the check still enforces it |
 | Autocomplete picks per token, at random | You pick per ~8-token chunk | Real autocomplete feel, same mechanism |
+| Regeneration ranks segments by length-normalised score (HF `sequences_scores`) | Ranks by raw total log-probability | Simpler to follow by hand, but favours shorter lines (see [Appendix B.4](#b4-why-different-lengths-matter)) |
 
 ---
 
@@ -470,3 +475,164 @@ Two things to notice:
 | How are the next 4 beams chosen? | Every surviving beam proposes its top 4 tokens; the 4 candidates with the highest totals win, from any parent. |
 | Why did `levels` and `,` lose every child? | Their own totals were already low; even their best next token couldn't lift them above the children of `and` and `with`. |
 | What does masking change? | A masked beam's tokens all get −10000, so its children rank last and never win a slot. Masking only decides **who may compete**; the totals decide who wins. |
+
+
+---
+
+## Appendix B: inside a sequence regeneration round
+
+This walks through tab ③ with **animal = tiger, target word = WILD** and the default settings
+(6 segments per round, 16 tokens max). Every number is real, from the app's model (Qwen2.5-0.5B on
+CPU, deterministic, so you'll see the same values).
+
+### B.1 What one round is
+
+A **round** adds (at most) one line to the poem. Each round does four things:
+
+```mermaid
+flowchart LR
+    A["1. Build the input:<br/>prompt + poem so far"] --> B["2. Beam search writes<br/>6 candidate lines"]
+    B --> C["3. Check each line:<br/>do the initials still<br/>spell W-I-L-D?"]
+    C --> D["4. Keep the fitting line<br/>with the highest<br/>log-probability"]
+    D --> A
+```
+
+For tiger + WILD the app needed 4 rounds:
+
+| Round | Poem before the round | Hint in prompt | Chosen line | Initials |
+|---|---|---|---|---|
+| 1 | (empty) | "must begin with W" | Wild, the tiger roars, | W |
+| 2 | Wild, the tiger roars, | "must begin with I" | In the forest's embrace, | WI |
+| 3 | …2 lines | "must begin with L" | Lions watch, | WIL |
+| 4 | …3 lines | "must begin with D" | Dogs bark, | WILD ✅ |
+
+**Step 1 in detail.** The model receives the chat prompt (system instructions plus the user
+message: *"Write an acrostic poem about a tiger. The first letters of its lines must spell WILD,
+one line per letter. The next line must begin with the letter I."*) and then the poem so far,
+placed as **the beginning of the model's own reply**. So in round 2 the model sees its reply
+already starting with `Wild, the tiger roars,⏎` and just carries on from there. It isn't asked
+to rewrite the poem; it only writes what comes next.
+
+### B.2 How the 6 candidates are generated
+
+The candidates come from the same beam search as tab ② (see
+[Appendix A](#appendix-a-how-beam-search-picks-the-next-beams)), with 6 beams and **no masking**.
+The difference is **when a beam stops**. A beam is finished as soon as it produces:
+
+- a token containing a **line break**: `⏎`, `,⏎`, `.⏎`, … (the line is done), or
+- the **end-of-text** token (the model thinks the whole poem is done), or
+- **16 tokens** without either (the line is cut off and the next round carries on writing it).
+
+Here are round 1's six candidates, split into the tokens the model actually wrote:
+
+| Candidate | Tokens | # tokens | Stopped because |
+|---|---|---|---|
+| Wild, the tiger roars, | `Wild` `,` `␣the` `␣tiger` `␣ro` `ars` `,⏎` | 7 | line break |
+| Wild, the tiger prowled the forest | `Wild` `,` `␣the` `␣tiger` `␣prow` `led` `␣the` `␣forest` `⏎` | 9 | line break |
+| Wild, the tiger prowled the forest, | … `␣forest` `,⏎` | 9 | line break |
+| Wild, the tiger prowled the jungle | … `␣jungle` `⏎` | 9 | line break |
+| Wild, the tiger prowled through the forest | … `␣through` `␣the` `␣forest` `⏎` | 10 | line break |
+| Wild, the tiger prowled the forest's edge | … `'s` `␣edge` `⏎` | 11 | line break |
+
+**That's why the lengths differ:** each beam keeps going until the model writes a line break,
+and different wordings reach it after different numbers of tokens.
+
+A few more things to notice:
+
+- **They all start with "Wild, the tiger".** Beam search grows every beam out of the best earlier
+  beams, so candidates usually share a beginning and only branch near the end. Beam search gives
+  you the *most probable* lines, not the most *varied* ones.
+- **Finished beams wait.** When a beam finishes, it is frozen (its text and total stop changing)
+  but it keeps its slot, while the unfinished beams keep growing. In round 1, the number of finished
+  beams at each step was `0, 0, 0, 0, 0, 0, 0, 1, 1, 4, 5`, and the search stopped once all 6 were
+  done, after 11 steps.
+- A frozen beam can still be pushed out by a better unfinished one, because all beams are ranked by
+  total at every step.
+
+### B.3 How a candidate's log-probability is calculated
+
+It's the same rule as in Appendix A: a candidate's **log-probability** is the sum of the log
+probability of each of its tokens, each one given everything before it (the prompt, the poem so
+far, and the earlier tokens of this line).
+
+**"Wild, the tiger roars,"** (round 1, chosen):
+
+| Token | p(token given everything before) | log p | Running total |
+|---|---|---|---|
+| `Wild` | 0.356 | −1.034 | −1.034 |
+| `,` | 0.542 | −0.612 | −1.646 |
+| `␣the` | 0.343 | −1.070 | −2.716 |
+| `␣tiger` | 0.808 | −0.213 | −2.929 |
+| `␣ro` | 0.143 | −1.945 | −4.874 |
+| `ars` | 0.703 | −0.353 | −5.227 |
+| `,⏎` | 0.132 | −2.027 | **−7.254** |
+
+**"Wild, the tiger prowled the forest"** (round 1, not chosen):
+
+| Token | p | log p | Running total |
+|---|---|---|---|
+| `Wild` `,` `␣the` `␣tiger` | (same as above) | | −2.929 |
+| `␣prow` | 0.199 | −1.614 | −4.543 |
+| `led` | 0.658 | −0.418 | −4.961 |
+| `␣the` | 0.639 | −0.449 | −5.410 |
+| `␣forest` | 0.452 | −0.793 | −6.203 |
+| `⏎` | 0.325 | −1.124 | **−7.327** |
+
+The two lines share their first four tokens, so they have the same running total (−2.929) up to
+`␣tiger`. After that they split. As a plain probability, −7.254 is e^−7.254 ≈ 0.0007: out of all
+the lines the model could write here, it gives this exact one about a 0.07% chance. Small numbers
+are normal; what matters is how candidates **compare**.
+
+### B.4 Why different lengths matter
+
+Every token's log p is negative (or 0), so **every extra token makes the total lower**. A long
+line pays for more tokens than a short one, even if the model is more confident about each of them:
+
+| Candidate | Total | # tokens | Average log p per token |
+|---|---|---|---|
+| Wild, the tiger roars, | **−7.254** ← chosen | 7 | −1.036 |
+| Wild, the tiger prowled the forest | −7.327 | 9 | **−0.814** |
+
+Per token, "prowled the forest" is the **more confident** line (−0.814 vs −1.036), but it has two
+more tokens to pay for, so its total is slightly lower and it loses. **Ranking by total
+log-probability favours shorter candidates.**
+
+The notebook ranks segments by Hugging Face's `sequences_scores`, which **divides** each total by
+the segment's length (a *length-normalised* score). Applied to these six candidates, that rule would pick "prowled the forest" (−0.814)
+instead. The app uses the plain total because it's easier to check by hand.
+Neither is "correct": normalising favours longer, more fluent lines, and the plain total favours
+short, safe ones.
+
+### B.5 How the check and the choice work
+
+After generation, each candidate is checked by appending it to the poem so far and reading the first
+letter of every line (ignoring leading `*`, `-`, quotes, digits):
+
+| Round 2 candidate | Total | Initials | Fits W-I-L-D? | |
+|---|---|---|---|---|
+| In the forest's embrace, | **−4.635** | WI | ✅ | ⭐ chosen |
+| In the jungle's embrace, | −5.567 | WI | ✅ | |
+| In the jungle's heart, | −5.997 | WI | ✅ | |
+| In the jungle, it prowls, | −7.638 | WI | ✅ | |
+| In the jungle, it's wild, | −8.721 | WI | ✅ | |
+| In the jungle, it prowls. | −9.760 | WI | ✅ | |
+
+**Fits** means the initials so far are the start of the target word (`WI` is the start of `WILD`).
+Among the fitting candidates, the one with the **highest** total (closest to 0) is chosen. Here
+every candidate fits (the hint "must begin with I" worked), so the choice comes down to
+log-probability alone. A candidate that started with, say, "The jungle…" would read `WT`, fail the
+check, and be thrown away however probable it was.
+
+If a segment hit the 16-token cap mid-line, the next round's poem ends without a line break, the
+hint is left out (the line already has its first letter), and the model simply finishes that line.
+
+### B.6 Summary
+
+| Question | Answer |
+|---|---|
+| What is a round? | One cycle of: write 6 candidate lines, check them, keep the best one that fits. Usually one round = one line of the poem. |
+| How are the candidates written? | Beam search with 6 beams, starting from the prompt + poem so far. A beam stops at a line break, at end-of-text, or after 16 tokens. |
+| Why do they have different lengths? | Each stops when the model writes a line break, which happens after a different number of tokens for different wordings. |
+| What is a candidate's log-probability? | The sum of log p of each of its tokens, each given everything before it = the log of the probability of the whole line. |
+| Why does length matter? | Each extra token adds a negative number, so with plain totals shorter lines have an edge. The notebook divides by length instead. |
+| How is the winner picked? | Throw away candidates whose initials don't spell the start of the target word; of the rest, pick the highest total. |
