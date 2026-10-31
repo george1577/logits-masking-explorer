@@ -27,6 +27,22 @@ DOC_LINK = "docs/how-logits-masking-works.md"
 
 st.set_page_config(page_title="Logits Masking Explorer", page_icon="🎭", layout="wide")
 
+# Results kept in session_state are logits_lab objects. When that code changes while the app is
+# running, Streamlit reloads it but old results keep their old shape, and one stale result would
+# crash every tab rendered after it. So drop stored results whenever the code changes.
+RESULT_KEYS = ("t1", "t2", "t2_kind", "t3", "ac")
+
+
+def code_version() -> str:
+    files = sorted((Path(__file__).parent / "logits_lab").glob("*.py"))
+    return "|".join(f"{f.name}:{f.stat().st_mtime_ns}" for f in files)
+
+
+if st.session_state.get("_code_version") != (version := code_version()):
+    for key in RESULT_KEYS:
+        st.session_state.pop(key, None)
+    st.session_state["_code_version"] = version
+
 
 @st.cache_resource(show_spinner="Loading model (first run downloads it)…")
 def get_model(model_id: str) -> LanguageModel:
